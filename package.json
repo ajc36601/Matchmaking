@@ -1,0 +1,12 @@
+{
+  "name": "matchmaking",
+  "version": "1.0.0",
+  "description": "Simple WebSocket matchmaking server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.13.0"
+  }
+}
