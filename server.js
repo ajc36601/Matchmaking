@@ -158,6 +158,23 @@ wss.on('connection', ws => {
 
             return;
         }
+        
+        // game_update: { type:"game_update", payload: {...} }
+        if (msg.type === "game_update") {
+            if (!player || !player.opponent) {
+                safeSend(ws, { type: 'error', message: 'no opponent to forward update to' });
+                return;
+            }
+
+            // forward to opponent
+            safeSend(player.opponent.ws, {
+                type: "game_update",
+                from: player.player_id,
+                payload: msg.payload   // can be any object
+            });
+            return;
+        }
+
 
         safeSend(ws, { type: "error", message: "Unknown message type" });
     });
