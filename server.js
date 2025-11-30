@@ -1,5 +1,5 @@
 // server.js
-// WebSocket-only matchmaking + chat (no UDP, no ENet)
+// WebSocket-only matchmaking + chat + HEARTBEAT + LATENCY TESTING
 
 const http = require('http');
 const WebSocket = require('ws');
@@ -39,11 +39,12 @@ function safeSend(ws, obj) {
     }
 }
 
+// Helpers
 function mmrDiff(a, b) {
     return Math.abs(a.mmr - b.mmr);
 }
 
-// Matchmaking logic (WebSocket only)
+// Matchmaking logic
 function attemptMatch() {
     if (queue.length < 2) return;
 
@@ -94,33 +95,30 @@ wss.on('connection', ws => {
 
     let player = null;
 
-    // heartbeat
+    // Standard WebSocket heartbeat
     ws.isAlive = true;
     ws.on('pong', () => ws.isAlive = true);
 
     ws.on('message', data => {
         let msg;
-
         try {
             msg = JSON.parse(data);
         } catch (e) {
-            safeSend(ws, { type: "error", message: "Invalid JSON" });
-            return;
+            return safeSend(ws, { type: "error", message: "Invalid JSON" });
         }
-
         if (!msg.type) return;
 
-        // join_queue
+        // -------------------------------
+        // JOIN QUEUE
+        // -------------------------------
         if (msg.type === "join_queue") {
             if (player) {
-                safeSend(ws, { type: "error", message: "already joined" });
-                return;
+                return safeSend(ws, { type: "error", message: "already joined" });
             }
 
             if (typeof msg.player_id !== "string" ||
                 typeof msg.mmr !== "number") {
-                safeSend(ws, { type: "error", message: "invalid join_queue payload" });
-                return;
+                return safeSend(ws, { type: "error", message: "invalid join_queue payload" });
             }
 
             player = {
@@ -138,16 +136,68 @@ wss.on('connection', ws => {
             return;
         }
 
-        // Chat message forwarding
+        // --------------------------------------
+        // HEARTBEAT: client ↔ server, host ↔ server
+        // --------------------------------------
+
+        if (msg.type === "ping_client_server") {
+            return safeSend(ws, {
+                type: "pong_client_server",
+                timestamp: msg.timestamp
+            });
+        }
+
+        if (msg.type === "ping_host_server") {
+            return safeSend(ws, {
+                type: "pong_host_server",
+                timestamp: msg.timestamp
+            });
+        }
+
+        // --------------------------------------
+        // LATENCY TESTS
+        // --------------------------------------
+
+        // Direct server ping reply
+        if (msg.type === "latency_request") {
+            return safeSend(ws, {
+                type: "latency_reply",
+                timestamp: msg.timestamp
+            });
+        }
+
+        // Relay latency from client → host (via server)
+        if (msg.type === "latency_request_to_host") {
+            if (!player || !player.opponent) {
+                return safeSend(ws, { type: "error", message: "No host/client available" });
+            }
+            return safeSend(player.opponent.ws, {
+                type: "relay_latency_to_host",
+                from: player.player_id,
+                timestamp: msg.timestamp
+            });
+        }
+
+        // Host responded to client
+        if (msg.type === "latency_reply_to_client") {
+            if (!player || !player.opponent) {
+                return safeSend(ws, { type: "error", message: "No opponent to relay to" });
+            }
+            return safeSend(player.opponent.ws, {
+                type: "relay_latency_to_client",
+                timestamp: msg.timestamp
+            });
+        }
+
+        // --------------------------------------
+        // CHAT
+        // --------------------------------------
         if (msg.type === "chat") {
             if (!player || !player.opponent) {
-                safeSend(ws, { type: "error", message: "No opponent to forward chat" });
-                return;
+                return safeSend(ws, { type: "error", message: "No opponent to forward chat" });
             }
-
             if (!msg.text || typeof msg.text !== "string") {
-                safeSend(ws, { type: "error", message: "Invalid chat text" });
-                return;
+                return safeSend(ws, { type: "error", message: "Invalid chat text" });
             }
 
             safeSend(player.opponent.ws, {
@@ -155,28 +205,26 @@ wss.on('connection', ws => {
                 from: player.player_id,
                 text: msg.text
             });
-
             return;
         }
-        
-        // game_update: { type:"game_update", payload: {...} }
+
+        // --------------------------------------
+        // GAME UPDATE
+        // --------------------------------------
         if (msg.type === "game_update") {
             if (!player || !player.opponent) {
-                safeSend(ws, { type: 'error', message: 'no opponent to forward update to' });
-                return;
+                return safeSend(ws, { type: 'error', message: 'no opponent to forward update to' });
             }
 
-            // forward to opponent
             safeSend(player.opponent.ws, {
                 type: "game_update",
                 from: player.player_id,
-                payload: msg.payload   // can be any object
+                payload: msg.payload
             });
             return;
         }
 
-
-        safeSend(ws, { type: "error", message: "Unknown message type" });
+        return safeSend(ws, { type: "error", message: "Unknown message type" });
     });
 
     ws.on('close', () => {
@@ -195,7 +243,7 @@ wss.on('connection', ws => {
     });
 });
 
-// Heartbeat (disconnect dead clients)
+// Standard WebSocket heartbeat (disconnect dead clients)
 setInterval(() => {
     wss.clients.forEach(ws => {
         if (!ws.isAlive) return ws.terminate();
